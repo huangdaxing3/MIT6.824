@@ -3,14 +3,14 @@ package mr
 import (
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"io/ioutil"
+	"log"
+	"net/rpc"
 	"os"
 	"sort"
 	"time"
 )
-import "log"
-import "net/rpc"
-import "hash/fnv"
 
 // Map functions return a slice of KeyValue.
 type KeyValue struct {
@@ -33,30 +33,29 @@ func ihash(key string) int {
 }
 
 func doMap(mapf func(string, string) []KeyValue, task *Task) {
-	fmt.Printf("map worker get task %d-%s\n", task.taskId, task.filename)
+	fmt.Printf("map worker get task %d-%s\n", task.taskId, task.Filename)
 
-	tmp := make([][]KeyValue, task.n_reduce)
-	for i := 0; i < task.n_reduce; i++ {
+	tmp := make([][]KeyValue, task.NReduce)
+	for i := 0; i < task.NReduce; i++ {
 		tmp[i] = make([]KeyValue, 0)
 	}
 
-	file, err := os.Open(task.filename)
+	file, err := os.Open(task.Filename)
 	if err != nil {
-		log.Fatalf("cannot open %v", task.filename)
+		log.Fatalf("cannot open %v", task.Filename)
 	}
 	content, err := ioutil.ReadAll(file)
 	if err != nil {
-		log.Fatalf("cannot read %v", task.filename)
+		log.Fatalf("cannot read %v", task.Filename)
 	}
 	file.Close()
 
-	kva := mapf(task.filename, string(content))
+	kva := mapf(task.Filename, string(content))
 	for _, kv := range kva {
-		i := ihash(kv.Key)
-		tmp[i%task.n_reduce] = append(tmp[i%task.n_reduce], kv)
+		tmp[ihash(kv.Key)%task.NReduce] = append(tmp[ihash(kv.Key)%task.NReduce], kv)
 	}
 
-	for j := 0; j < task.n_reduce; j++ {
+	for j := 0; j < task.NReduce; j++ {
 		if len(tmp[j]) == 0 {
 			continue
 		}
@@ -78,7 +77,7 @@ func doReduce(reducef func(string, []string) string, task *Task) {
 	fmt.Printf("reduce worker get task %d\n", task.taskId)
 
 	tmp := make([]KeyValue, 0)
-	for i := 0; i < task.n_map; i++ {
+	for i := 0; i < task.NMap; i++ {
 		iname := fmt.Sprintf("mr-%d-%d", i, task.taskId)
 		ifile, _ := os.Open(iname)
 		dec := json.NewDecoder(ifile)
@@ -123,12 +122,12 @@ func Worker(mapf func(string, string) []KeyValue,
 	for {
 		args := RPCArgs{}
 		reply := RPCReply{}
-		call("coordinator.assigntask", &args, &reply)
-		switch reply.task_Info.taskType {
+		call("Coordinator.GetTask", &args, &reply)
+		switch reply.TaskInfo.taskType {
 		case Map:
-			doMap(mapf, &reply.task_Info)
+			doMap(mapf, &reply.TaskInfo)
 		case Reduce:
-			doReduce(reducef, &reply.task_Info)
+			doReduce(reducef, &reply.TaskInfo)
 		case Wait:
 			fmt.Println("wait tasks")
 			time.Sleep(time.Second)
@@ -137,8 +136,8 @@ func Worker(mapf func(string, string) []KeyValue,
 			fmt.Println("tasks done")
 			return
 		}
-		args.task_Info = reply.task_Info
-		call("coordinator.done", &args, &reply)
+		args.TaskInfo = reply.TaskInfo
+		call("Coordinator.TaskDone", &args, &reply)
 	}
 
 }
