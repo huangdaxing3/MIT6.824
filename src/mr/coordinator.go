@@ -1,7 +1,6 @@
 package mr
 
 import (
-	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -13,31 +12,15 @@ import (
 
 type Coordinator struct {
 	// Your definitions here.
-	nmap          int
-	nReduce       int
-	haveReduce    bool
 	lock          sync.Mutex
-	mapTasked     map[int]Task
-	mapTasking    map[int]Task
-	reduceTasked  map[int]Task
-	reduceTasking map[int]Task
+	nmapTasks     int
+	nreduceTasks  int
+	mapTasked     [8]bool
+	reduceTasked  [10]bool
+	mapFiles      [8]string
+	mapTasking    [8]time.Time
+	reduceTasking [10]time.Time
 	isDone        bool
-}
-
-const (
-	Map    = 0
-	Reduce = 1
-	Wait   = 2
-	Done   = 3
-)
-
-type Task struct {
-	Filename  string
-	taskType  int
-	taskId    int
-	NReduce   int
-	NMap      int
-	timeStamp int64
 }
 
 // an example RPC handler.
@@ -66,77 +49,66 @@ func (c *Coordinator) GetTask(args *RPCArgs, reply *RPCReply) error {
 	c.lock.Lock()
 	defer c.lock.Unlock()
 
-	currentTime := time.Now().Unix()
-	for k, v := range c.mapTasking {
-		if currentTime-v.timeStamp > 10 {
-			c.mapTasked[k] = v
-			delete(c.mapTasking, k)
-			fmt.Printf("check map task %d\n", k)
+	reply.NReduceTasks = c.nreduceTasks
+	reply.NMapTasks = c.nmapTasks
+
+	for {
+		mapDone := true
+		for i, done := range c.mapTasked {
+			if !done {
+				if c.mapTasking[i].IsZero() || time.Since(c.mapTasking[i]).Seconds() > 10 {
+					reply.TaskType = Map
+					reply.TaskNum = i
+					reply.MapFile = c.mapFiles[i]
+					c.mapTasking[i] = time.Now()
+					return nil
+				} else {
+					mapDone = false
+				}
+			}
 		}
-	}
-	for k, v := range c.reduceTasking {
-		if currentTime-v.timeStamp > 10 {
-			c.reduceTasked[k] = v
-			delete(c.reduceTasking, k)
-			fmt.Printf("check reduce task %d\n", k)
+		if !mapDone {
+		} else {
+			break
 		}
 	}
 
-	if len(c.mapTasked) > 0 {
-		for k, v := range c.mapTasked {
-			v.timeStamp = time.Now().Unix()
-			reply.TaskInfo = v
-			c.mapTasking[k] = v
-			delete(c.mapTasked, k)
-			fmt.Printf("distribute map task %d\n", reply.TaskInfo.taskId)
-			return nil
+	for {
+		reduceDone := true
+		for i, done := range c.reduceTasked {
+			if !done {
+				if c.reduceTasking[i].IsZero() || time.Since(c.reduceTasking[i]).Seconds() > 10 {
+					reply.TaskType = Reduce
+					reply.TaskNum = i
+					c.reduceTasking[i] = time.Now()
+					return nil
+				} else {
+					reduceDone = false
+				}
+			}
 		}
-	} else if len(c.mapTasking) > 0 {
-		reply.TaskInfo = Task{taskType: Wait}
-		return nil
+		if !reduceDone {
+		} else {
+			break
+		}
 	}
+	reply.TaskType = Done
+	c.isDone = true
 
-	if !c.haveReduce {
-		for i := 0; i < c.nReduce; i++ {
-			c.reduceTasked[i] = Task{
-				taskType:  Reduce,
-				taskId:    i,
-				NReduce:   c.nReduce,
-				NMap:      c.nmap,
-				timeStamp: time.Now().Unix()}
-		}
-		c.haveReduce = true
-	}
-
-	if len(c.reduceTasked) > 0 {
-		for k, v := range c.reduceTasked {
-			v.timeStamp = time.Now().Unix()
-			reply.TaskInfo = v
-			c.reduceTasking[k] = v
-			delete(c.reduceTasked, k)
-			fmt.Printf("distribute reduce task %d\n", k)
-			return nil
-		}
-	} else if len(c.reduceTasking) > 0 {
-		reply.TaskInfo = Task{taskType: Wait}
-	} else {
-		reply.TaskInfo = Task{taskType: Done}
-		c.isDone = true
-	}
 	return nil
 }
 
-func (c *Coordinator) TaskDone(args *RPCArgs, reply *RPCReply) error {
+func (c *Coordinator) TaskDone(args *TaskArgs, reply *TaskArgs) error {
 	c.lock.Lock()
 	defer c.lock.Unlock()
 
-	switch args.TaskInfo.taskType {
+	switch args.TaskType {
 	case Map:
-		delete(c.mapTasking, args.TaskInfo.taskId)
-		fmt.Printf("Map task %d done, %d tasks left\n", args.TaskInfo.taskId, len(c.mapTasking)+len(c.mapTasked))
+		c.mapTasked[args.TaskNum] = true
 	case Reduce:
-		delete(c.reduceTasking, args.TaskInfo.taskId)
-		fmt.Printf("Reduce task %d done, %d tasks left\n", args.TaskInfo.taskId, len(c.reduceTasking)+len(c.reduceTasked))
+		c.reduceTasked[args.TaskNum] = true
+	default:
+		log.Fatalf("bad finished task %s", args.TaskType)
 	}
 	return nil
 }
@@ -145,7 +117,7 @@ func (c *Coordinator) Done() bool {
 	ret := false
 
 	// Your code here.
-	if c.isDone == true {
+	if c.isDone {
 		ret = true
 	}
 	//if len(c.mapTasked) == 0 && len(c.mapTasking) == 0 && len(c.reduceTasking) == 0 && len(c.reduceTasked) == 0 {
@@ -162,27 +134,19 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c.lock.Lock()
 	defer c.lock.Unlock()
 
-	c.mapTasked = make(map[int]Task)
-	c.mapTasking = make(map[int]Task)
-	c.reduceTasked = make(map[int]Task)
-	c.reduceTasking = make(map[int]Task)
+	c.nreduceTasks = nReduce
+	c.nmapTasks = len(files)
 
-	num := len(files)
-	fmt.Printf("---coor_MakeCoordinator start\n")
-	for i, file := range files {
-		fmt.Printf("i=%d\n", i)
-		fmt.Printf("filename: %s\n", file)
-		c.mapTasked[i] = Task{
-			Filename:  file,
-			taskType:  Map,
-			taskId:    i,
-			NReduce:   nReduce,
-			NMap:      num,
-			timeStamp: time.Now().Unix()}
+	for i := 0; i < len(files); i++ {
+		c.mapFiles[i] = files[i]
+		c.mapTasked[i] = false
+		c.reduceTasked[i] = false
 	}
-	c.haveReduce = false
-	c.nReduce = nReduce
-	c.nmap = num
+
+	//c.mapTasked = make(map[int]Task)
+	//c.mapTasking = make(map[int]Task)
+	//c.reduceTasked = make(map[int]Task)
+	//c.reduceTasking = make(map[int]Task)
 
 	c.server()
 	return &c

@@ -9,7 +9,6 @@ import (
 	"net/rpc"
 	"os"
 	"sort"
-	"time"
 )
 
 // Map functions return a slice of KeyValue.
@@ -32,83 +31,106 @@ func ihash(key string) int {
 	return int(h.Sum32() & 0x7fffffff)
 }
 
-func doMap(mapf func(string, string) []KeyValue, task *Task) {
-	fmt.Printf("map worker get task %d-%s\n", task.taskId, task.Filename)
+//// 对临时文件进行重命名
+//func yReduceFile(tmpFile string, taskN int) {
+//	finalFile := fmt.Sprintf("mr-out-%d", taskN)
+//	os.Rename(tmpFile, finalFile)
+//}
 
-	tmp := make([][]KeyValue, task.NReduce)
-	for i := 0; i < task.NReduce; i++ {
-		tmp[i] = make([]KeyValue, 0)
-	}
+//func gettmpFile(mapTaskN int, redTaskN int) string {
+//	//fmt.Printf("%d %d\n", mapTaskN, redTaskN)
+//	return fmt.Sprintf("mr-%d-%d", mapTaskN, redTaskN)
+//}
 
-	file, err := os.Open(task.Filename)
+//func ytmpFile(tmpFile string, mapTaskN int, redTaskN int) {
+//	finalFile := gettmpFile(mapTaskN, redTaskN)
+//	os.Rename(tmpFile, finalFile)
+//}
+
+func doMap(filename string, taskNum int, nReduceTasks int, mapf func(string, string) []KeyValue) {
+	file, err := os.Open(filename)
 	if err != nil {
-		log.Fatalf("cannot open %v", task.Filename)
+		log.Fatalf("Line 53: cannot open %v", filename)
 	}
 	content, err := ioutil.ReadAll(file)
 	if err != nil {
-		log.Fatalf("cannot read %v", task.Filename)
+		log.Fatalf("line 57: cannot read %v", filename)
 	}
-	file.Close()
+	defer file.Close()
 
-	kva := mapf(task.Filename, string(content))
+	kva := mapf(filename, string(content))
+
+	tmpFiles := []*os.File{}
+	tmp := []string{}
+	encoders := []*json.Encoder{}
+	for r := 0; r < nReduceTasks; r++ {
+		ifile, err := ioutil.TempFile(".", "")
+		if err != nil {
+			log.Fatalf("cannot open tmpfile")
+		}
+		tmpFiles = append(tmpFiles, ifile)
+		iname := ifile.Name()
+		tmp = append(tmp, iname)
+		enc := json.NewEncoder(ifile)
+		encoders = append(encoders, enc)
+	}
+
 	for _, kv := range kva {
-		tmp[ihash(kv.Key)%task.NReduce] = append(tmp[ihash(kv.Key)%task.NReduce], kv)
+		encoders[ihash(kv.Key)%nReduceTasks].Encode(&kv)
 	}
-
-	for j := 0; j < task.NReduce; j++ {
-		if len(tmp[j]) == 0 {
-			continue
-		}
-		oname := fmt.Sprintf("mr-%d-%d", task.taskId, j)
-		ofile, _ := ioutil.TempFile("./", "tmp_")
-		enc := json.NewEncoder(ofile)
-		for _, kv := range tmp[j] {
-			err := enc.Encode(&kv)
-			if err != nil {
-				log.Fatalf("Json encode err: K:V %s:%s", kv.Key, kv.Value)
-			}
-		}
-		ofile.Close()
-		os.Rename(ofile.Name(), oname)
+	for _, f := range tmpFiles {
+		f.Close()
+	}
+	for r := 0; r < nReduceTasks; r++ {
+		finalFile := fmt.Sprintf("mr-%d-%d", taskNum, r)
+		os.Rename(tmp[r], finalFile)
 	}
 }
 
-func doReduce(reducef func(string, []string) string, task *Task) {
-	fmt.Printf("reduce worker get task %d\n", task.taskId)
-
-	tmp := make([]KeyValue, 0)
-	for i := 0; i < task.NMap; i++ {
-		iname := fmt.Sprintf("mr-%d-%d", i, task.taskId)
-		ifile, _ := os.Open(iname)
-		dec := json.NewDecoder(ifile)
+func doReduce(taskNum int, nMapTasks int, reducef func(string, []string) string) {
+	kva := []KeyValue{}
+	for m := 0; m < nMapTasks; m++ {
+		iFilename := fmt.Sprintf("mr-%d-%d", m, taskNum)
+		file, err := os.Open(iFilename)
+		if err != nil {
+			log.Fatalf("line : 96 cannot open %v", iFilename)
+		}
+		dec := json.NewDecoder(file)
 		for {
 			var kv KeyValue
 			if err := dec.Decode(&kv); err != nil {
 				break
 			}
-			tmp = append(tmp, kv)
+			kva = append(kva, kv)
 		}
-		ifile.Close()
+		file.Close()
 	}
-	sort.Sort(ByKey(tmp))
-	oname := fmt.Sprintf("mr-out-%d", task.taskId)
-	ofile, _ := ioutil.TempFile("./", "tmp_")
+	// 排序
+	sort.Sort(ByKey(kva))
+	ofile, err := ioutil.TempFile(".", "")
+	if err != nil {
+		log.Fatalf("cannot open tmpfile")
+	}
+	oname := ofile.Name()
 
-	for i := 0; i < len(tmp); {
+	i := 0
+	for i < len(kva) {
 		j := i + 1
-		for j < len(tmp) && tmp[j].Key == tmp[i].Key {
+		for j < len(kva) && kva[j].Key == kva[i].Key {
 			j++
 		}
 		values := []string{}
 		for k := i; k < j; k++ {
-			values = append(values, tmp[k].Value)
+			values = append(values, kva[k].Value)
 		}
-		output := reducef(tmp[i].Key, values)
-		fmt.Fprintf(ofile, "%v %v\n", tmp[i].Key, output)
+		output := reducef(kva[i].Key, values)
+
+		fmt.Fprintf(ofile, "%v %v\n", kva[i].Key, output)
 		i = j
 	}
-	ofile.Close()
-	os.Rename(ofile.Name(), oname)
+	finalFile := fmt.Sprintf("mr-out-%d", taskNum)
+	os.Rename(oname, finalFile)
+	//yReduceFile(oname, taskNum)
 }
 
 // main/mrworker.go calls this function.
@@ -123,21 +145,23 @@ func Worker(mapf func(string, string) []KeyValue,
 		args := RPCArgs{}
 		reply := RPCReply{}
 		call("Coordinator.GetTask", &args, &reply)
-		switch reply.TaskInfo.taskType {
+		switch reply.TaskType {
 		case Map:
-			doMap(mapf, &reply.TaskInfo)
+			doMap(reply.MapFile, reply.TaskNum, reply.NReduceTasks, mapf)
 		case Reduce:
-			doReduce(reducef, &reply.TaskInfo)
-		case Wait:
-			fmt.Println("wait tasks")
-			time.Sleep(time.Second)
-			continue
+			doReduce(reply.TaskNum, reply.NMapTasks, reducef)
 		case Done:
 			fmt.Println("tasks done")
-			return
+			os.Exit(0)
+		default:
+			fmt.Errorf("bad task type %s", reply.TaskType)
 		}
-		args.TaskInfo = reply.TaskInfo
-		call("Coordinator.TaskDone", &args, &reply)
+		//args.TaskInfo = reply.TaskInfo
+		fargs := TaskArgs{
+			TaskType: reply.TaskType,
+			TaskNum:  reply.TaskNum}
+		freply := TaskReply{}
+		call("Coordinator.TaskDone", &fargs, &freply)
 	}
 
 }
