@@ -68,14 +68,6 @@ const (
 	Voted
 )
 
-type AppendLogStatus int
-
-const (
-	AppendGood AppendLogStatus = iota
-	AppendOverTime
-	AppendKill
-)
-
 var HeartTimeout = 120 * time.Millisecond
 
 // A Go object implementing a single Raft peer.
@@ -261,31 +253,6 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	return
 }
 
-//func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
-//	//rf.mu.Lock()
-//	//defer rf.mu.Unlock()
-//	//if rf.killed() {
-//	//	reply.AppendStatus = AppendKill
-//	//	reply.Term = -1
-//	//	reply.Success = false
-//	//	return
-//	//}
-//	//if args.Term < rf.currentTerm {
-//	//	reply.AppendStatus = AppendOverTime
-//	//	reply.Term = rf.currentTerm
-//	//	reply.Success = false
-//	//	return
-//	//}
-//	//rf.currentTerm = args.Term
-//	//rf.votedFor = args.LeaderId
-//	//rf.role = Follower
-//	//rf.timer.Reset(rf.overtime)
-//	//reply.AppendStatus = AppendGood
-//	//reply.Term = rf.currentTerm
-//	//reply.Success = true
-//	//return
-//}
-
 // example code to send a RequestVote RPC to a server.
 // server is the index of the target server in rf.peers[].
 // expects RPC arguments in args.
@@ -364,39 +331,6 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 	}
 	return ok
 }
-
-//func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
-//	if rf.killed() {
-//		return false
-//	}
-//	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
-//	if !ok {
-//		if rf.killed() {
-//			return false
-//		}
-//		ok = rf.peers[server].Call("Raft.AppendEntries", args, reply)
-//	}
-//	rf.mu.Lock()
-//	defer rf.mu.Unlock()
-//	switch reply.AppendStatus {
-//	case AppendKill:
-//		{
-//			return false
-//		}
-//	case AppendGood:
-//		{
-//			return true
-//		}
-//	case AppendOverTime:
-//		{
-//			rf.role = Follower
-//			rf.votedFor = -1
-//			rf.timer.Reset(rf.overtime)
-//			rf.currentTerm = reply.Term
-//		}
-//	}
-//	return ok
-//}
 
 // the service using Raft (e.g. a k/v server) wants to start
 // agreement on the next command to be appended to Raft's log. if this
@@ -484,22 +418,6 @@ func (rf *Raft) ticker() {
 					go rf.sendRequestVote(i, &voteargs, &voteReply, &voteCount)
 				}
 			case Leader:
-				//rf.timer.Reset(HeartTimeout)
-				//for i := 0; i < len(rf.peers); i++ {
-				//	if rf.me == i {
-				//		continue
-				//	}
-				//	appendEntriesArgs := AppendEntriesArgs{
-				//		Term:         rf.currentTerm,
-				//		LeaderId:     rf.me,
-				//		PrevLogIndex: 0,
-				//		PrevLogTerm:  0,
-				//		Entries:      nil,
-				//		LeaderCommit: rf.commitIndex,
-				//	}
-				//	appendEntrieReply := AppendEntriesReply{}
-				//	go rf.sendAppendEntries(i, &appendEntriesArgs, &appendEntrieReply)
-				//}
 			}
 			rf.mu.Unlock()
 		}
