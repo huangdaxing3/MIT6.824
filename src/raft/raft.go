@@ -68,6 +68,8 @@ const (
 	Voted
 )
 
+type AppendLogStatus int
+
 var HeartTimeout = 120 * time.Millisecond
 
 // A Go object implementing a single Raft peer.
